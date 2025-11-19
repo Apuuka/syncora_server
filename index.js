@@ -81,6 +81,7 @@ app.post("/joinQueue", (req, res) => {
     if (!uid || !game || !queues[game]) {
         return res.status(400).send({ error: "Invalid request" });
     }
+    queues[game] = queues[game].filter(p => p.uid !== uid);
 
     queues[game].push({
         uid,
@@ -88,7 +89,20 @@ app.post("/joinQueue", (req, res) => {
         time: Date.now()
     });
 
-    console.log(`Player ${uid} joined ${game}`);
+    console.log(`Player ${uid} joined ${game}. Total: ${queues[game].length}`);
+    res.send({ ok: true });
+});
+
+// =============== выход из очереди ===============
+app.post("/leaveQueue", (req, res) => {
+    const { uid, game } = req.body;
+
+    if (!uid || !queues[game]) {
+        return res.status(200).send({ ok: true });
+    }
+    queues[game] = queues[game].filter(p => p.uid !== uid);
+    
+    console.log(`Player ${uid} left ${game}`);
     res.send({ ok: true });
 });
 
@@ -120,6 +134,7 @@ app.post("/checkMatch", (req, res) => {
             return res.send({
                 match: {
                     players: [uid, other.uid]
+					opponentParams: other.params
                 }
             });
         }
