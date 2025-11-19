@@ -16,10 +16,9 @@ const queues = {
 };
 
 // =============== хранилище готовых матчей ===============
-// Ключ - UID игрока, Значение - данные о матче
 const pendingMatches = {};
 
-// =============== deadlock матчмекинг ===============
+// =============== РЕЙТИНГИ И КОНСТАНТЫ ================
 const deadlockRankOrder = {
     "INITIATE": 1,
     "SEEKER": 2,
@@ -34,43 +33,130 @@ const deadlockRankOrder = {
     "ETERNUS": 11
 };
 
+const pubgRanks = [
+    "Бронза", "Серебро", "Золото", "Платина", 
+    "Алмаз", "Корона", "Ас", "Завоеватель"
+];
+
+const valorantRanks = [
+    "Iron", "Bronze", "Silver", "Gold", "Platinum", 
+    "Diamond", "Ascendant", "Immortal", "Radiant"
+];
+
+// =============== УНИВЕРСАЛЬНАЯ ЛОГИКА ИГНОРА ===============
+function isIgnored(me, other) {
+    if (me.ignored && me.ignored.includes(other.uid)) return true;
+    if (other.ignored && other.ignored.includes(me.uid)) return true;
+    return false;
+}
+
+// =========================================================
+//                  ПРАВИЛА МАТЧМЕЙКИНГА (с учетом времени)
+// =========================================================
+
+// ---- DEADLOCK (Rank Index) ----
 function matchDeadlock(me, other, searchTime) {
+    if (isIgnored(me, other)) return false;
+
     const meRank = deadlockRankOrder[me.params.rank];
     const otherRank = deadlockRankOrder[other.params.rank];
     if (!meRank || !otherRank) return false;
 
-    // Проверка черного списка (ignored)
-    if (me.ignored && me.ignored.includes(other.uid)) return false;
-    if (other.ignored && other.ignored.includes(me.uid)) return false;
-
+    // Расширение толерантности по рангу с течением времени
     const tolerance =
         searchTime < 20 ? 1 :
         searchTime < 40 ? 2 :
-        searchTime < 60 ? 3 : 5;
+        searchTime < 60 ? 3 : 5; // Максимум 5 рангов
 
     return Math.abs(meRank - otherRank) <= tolerance;
 }
 
-// =============== правила для других игр ===============
-// (Здесь можно добавить логику ignored для других игр по аналогии)
+// ---- DOTA 2 (Rating/MMR) ----
 function matchDota(me, other, searchTime) {
-    return Math.abs(me.params.rating - other.params.rating) < 500;
+    if (isIgnored(me, other)) return false;
+
+    const diff = Math.abs(me.params.rating - other.params.rating);
+
+    // Расширение толерантности по MMR с течением времени
+    const tolerance =
+        searchTime < 20 ? 500 :
+        searchTime < 40 ? 1000 :
+        searchTime < 60 ? 1500 :
+        searchTime < 90 ? 2000 :
+        2800; // Максимум 2800 MMR
+
+    return diff <= tolerance;
 }
 
-function matchCS2(me, other) {
-    return Math.abs(me.params.rank - other.params.rank) <= 3;
+// ---- CS2 FACEIT ELO ----
+function matchCS2(me, other, searchTime) {
+    if (isIgnored(me, other)) return false;
+
+    const diff = Math.abs(me.params.elo - other.params.elo);
+
+    // Расширение толерантности по ELO с течением времени
+    const tolerance =
+        searchTime < 20 ? 100 :
+        searchTime < 40 ? 200 :
+        searchTime < 60 ? 300 :
+        400; // Максимум 400 ELO
+
+    return diff <= tolerance;
 }
 
-function matchValorant(me, other) {
-    return Math.abs(me.params.rank - other.params.rank) <= 2;
+// ---- RUST (hours played) ----
+function matchRust(me, other, searchTime) {
+    if (isIgnored(me, other)) return false;
+
+    const h1 = me.params.hours;
+    const h2 = other.params.hours;
+
+    if (!h1 || !h2 || h1 === 0 || h2 === 0) return false; 
+
+    const diff = Math.abs(h1 - h2);
+    const percent = diff / Math.max(h1, h2);
+
+    // Расширение толерантности по проценту часов
+    const tolerance =
+        searchTime < 30 ? 0.20 :  // строго 20%
+        searchTime < 60 ? 0.30 :  // мягче 30%
+        0.40;                     // максимальный лимит 40%
+
+    return percent <= tolerance;
 }
 
-function matchRust() {
-    return true;
+// ---- PUBG (Rank Index) ----
+function matchPubg(me, other, searchTime) {
+    if (isIgnored(me, other)) return false;
+
+    const i1 = pubgRanks.indexOf(me.params.rank);
+    const i2 = pubgRanks.indexOf(other.params.rank);
+    if (i1 === -1 || i2 === -1) return false;
+
+    // Расширение толерантности по рангу
+    const tolerance =
+        searchTime < 30 ? 1 : // Соседний ранг
+        searchTime < 60 ? 2 : // Два ранга
+        3; // Три ранга
+
+    return Math.abs(i1 - i2) <= tolerance;
 }
 
-function matchPubg(me, other) {
-    return Math.abs(me.params.kd - other.params.kd) < 1.0;
+// ---- VALORANT (Rank Index) ----
+function matchValorant(me, other, searchTime) {
+    if (isIgnored(me, other)) return false;
+
+    const i1 = valorantRanks.indexOf(me.params.rank);
+    const i2 = valorantRanks.indexOf(other.params.rank);
+    if (i1 === -1 || i2 === -1) return false;
+
+    // Расширение толерантности по рангу
+    const tolerance =
+        searchTime < 30 ? 1 : // Соседний ранг
+        searchTime < 60 ? 2 : // Два ранга
+        3; // Три ранга
+
+    return Math.abs(i1 - i2) <= tolerance;
 }
 
 // =============== сборник правил ===============
@@ -85,7 +171,6 @@ const matchRules = {
 
 // =============== вход в очередь ===============
 app.post("/joinQueue", (req, res) => {
-    // ОБРАТИ ВНИМАНИЕ: открывающая скобка { должна быть здесь
     const { uid, game, params, ignored } = req.body;
 
     if (!uid || !game || !queues[game]) {
@@ -154,8 +239,9 @@ app.post("/checkMatch", (req, res) => {
     for (const other of queue) {
         if (other.uid === uid) continue;
 
+        // Здесь вызывается новая функция matcher с учетом isIgnored и searchTime
         if (matcher(me, other, searchTime)) {
-            console.log(`MATCH FOUND: ${uid} + ${other.uid}`);
+            console.log(`MATCH FOUND: ${uid} + ${other.uid} in ${game} after ${searchTime.toFixed(1)}s`);
 
             const matchForMe = {
                 players: [uid, other.uid],
