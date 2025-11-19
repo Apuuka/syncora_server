@@ -1,15 +1,11 @@
-const functions = require("firebase-functions");
-const admin = require("firebase-admin");
 const express = require("express");
 const cors = require("cors");
-
-admin.initializeApp();
-const db = admin.firestore();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// =============== очереди ===============
 const queues = {
     deadlock: [],
     dota2: [],
@@ -19,8 +15,7 @@ const queues = {
     pubg: []
 };
 
-// =============== матчмейкнг по дедлоку ===============
-
+// =============== deadlock матчмекинг ===============
 const deadlockRankOrder = {
     "INITIATE": 1,
     "SEEKER": 2,
@@ -38,7 +33,6 @@ const deadlockRankOrder = {
 function matchDeadlock(me, other, searchTime) {
     const meRank = deadlockRankOrder[me.params.rank];
     const otherRank = deadlockRankOrder[other.params.rank];
-
     if (!meRank || !otherRank) return false;
 
     const tolerance =
@@ -49,30 +43,28 @@ function matchDeadlock(me, other, searchTime) {
     return Math.abs(meRank - otherRank) <= tolerance;
 }
 
-
-
-// =============== матчмейкнг по доте ===============
-
+// =============== правила для других игр ===============
 function matchDota(me, other, searchTime) {
     return Math.abs(me.params.rating - other.params.rating) < 500;
 }
 
-function matchCS2(me, other, searchTime) {
+function matchCS2(me, other) {
     return Math.abs(me.params.rank - other.params.rank) <= 3;
 }
 
-function matchValorant(me, other, searchTime) {
+function matchValorant(me, other) {
     return Math.abs(me.params.rank - other.params.rank) <= 2;
 }
 
-function matchRust(me, other, searchTime) {
+function matchRust() {
     return true;
 }
 
-function matchPubg(me, other, searchTime) {
+function matchPubg(me, other) {
     return Math.abs(me.params.kd - other.params.kd) < 1.0;
 }
 
+// =============== сборник правил ===============
 const matchRules = {
     deadlock: matchDeadlock,
     dota2: matchDota,
@@ -82,7 +74,7 @@ const matchRules = {
     pubg: matchPubg
 };
 
-// =============== ВХОД В ОЧЕРЕДЬ ===============
+// =============== вход в очередь ===============
 app.post("/joinQueue", (req, res) => {
     const { uid, game, params } = req.body;
 
@@ -96,11 +88,11 @@ app.post("/joinQueue", (req, res) => {
         time: Date.now()
     });
 
-    console.log(`Player ${uid} joined ${game} queue`);
+    console.log(`Player ${uid} joined ${game}`);
     res.send({ ok: true });
 });
 
-// =============== ПРОВЕРКА МАТЧА ===============
+// =============== поиск матча ===============
 app.post("/checkMatch", (req, res) => {
     const { uid, game } = req.body;
 
@@ -117,7 +109,7 @@ app.post("/checkMatch", (req, res) => {
 
     const matcher = matchRules[game];
 
-    for (let other of queue) {
+    for (const other of queue) {
         if (other.uid === uid) continue;
 
         if (matcher(me, other, searchTime)) {
@@ -136,7 +128,7 @@ app.post("/checkMatch", (req, res) => {
     res.send({ match: null });
 });
 
-// =============== ОБЩЕЕ КОЛИЧЕСТВО ЛЮДЕЙ В ПОИСКЕ ===============
+// =============== общее количество игроков ===============
 app.get("/totalSearching", (req, res) => {
     let total = 0;
     for (const game in queues) {
@@ -145,7 +137,7 @@ app.get("/totalSearching", (req, res) => {
     res.send({ total });
 });
 
-// =============== СКОЛЬКО ИЩЕТ ПО ОДНОЙ ИГРЕ ===============
+// =============== игроки по игре ===============
 app.post("/searchingByGame", (req, res) => {
     const { game } = req.body;
 
@@ -156,6 +148,6 @@ app.post("/searchingByGame", (req, res) => {
     res.send({ count: queues[game].length });
 });
 
-
-
-exports.api = functions.https.onRequest(app);
+// =============== запуск сервера ===============
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
