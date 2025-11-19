@@ -5,6 +5,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// =============== очереди ===============
 const queues = {
     deadlock: [],
     dota2: [],
@@ -14,88 +15,136 @@ const queues = {
     pubg: []
 };
 
-// === Хранилище готовых матчей ===
-const pendingMatches = {}; 
+// =============== хранилище готовых матчей ===============
+// Ключ - UID игрока, Значение - данные о матче
+const pendingMatches = {};
 
+// =============== deadlock матчмекинг ===============
 const deadlockRankOrder = {
-    "INITIATE": 1, "SEEKER": 2, "ALCHEMIST": 3, "ARCANIST": 4, "RITUALIST": 5,
-    "EMISSARY": 6, "ARCHON": 7, "ORACLE": 8, "PHANTOM": 9, "ASCENDANT": 10, "ETERNUS": 11
+    "INITIATE": 1,
+    "SEEKER": 2,
+    "ALCHEMIST": 3,
+    "ARCANIST": 4,
+    "RITUALIST": 5,
+    "EMISSARY": 6,
+    "ARCHON": 7,
+    "ORACLE": 8,
+    "PHANTOM": 9,
+    "ASCENDANT": 10,
+    "ETERNUS": 11
 };
 
-// Логика сравнения Deadlock
 function matchDeadlock(me, other, searchTime) {
     const meRank = deadlockRankOrder[me.params.rank];
     const otherRank = deadlockRankOrder[other.params.rank];
     if (!meRank || !otherRank) return false;
 
+    // Проверка черного списка (ignored)
     if (me.ignored && me.ignored.includes(other.uid)) return false;
     if (other.ignored && other.ignored.includes(me.uid)) return false;
 
-    const tolerance = searchTime < 20 ? 1 : searchTime < 40 ? 2 : searchTime < 60 ? 3 : 5;
+    const tolerance =
+        searchTime < 20 ? 1 :
+        searchTime < 40 ? 2 :
+        searchTime < 60 ? 3 : 5;
+
     return Math.abs(meRank - otherRank) <= tolerance;
 }
 
+// =============== правила для других игр ===============
+// (Здесь можно добавить логику ignored для других игр по аналогии)
+function matchDota(me, other, searchTime) {
+    return Math.abs(me.params.rating - other.params.rating) < 500;
+}
+
+function matchCS2(me, other) {
+    return Math.abs(me.params.rank - other.params.rank) <= 3;
+}
+
+function matchValorant(me, other) {
+    return Math.abs(me.params.rank - other.params.rank) <= 2;
+}
+
+function matchRust() {
+    return true;
+}
+
+function matchPubg(me, other) {
+    return Math.abs(me.params.kd - other.params.kd) < 1.0;
+}
+
+// =============== сборник правил ===============
 const matchRules = {
     deadlock: matchDeadlock,
-    dota2: (m, o) => true,
-    cs2: (m, o) => true,
-    valorant: (m, o) => true,
-    rust: () => true,
-    pubg: (m, o) => true
-};
+    dota2: matchDota,
+    cs2: matchCS2,
+    valorant: matchValorant,
+    rust: matchRust,
+    pubg: matchPubg
+}; 
 
-app.post("/joinQueue", (req, res) =>
+// =============== вход в очередь ===============
+app.post("/joinQueue", (req, res) => {
+    // ОБРАТИ ВНИМАНИЕ: открывающая скобка { должна быть здесь
     const { uid, game, params, ignored } = req.body;
 
     if (!uid || !game || !queues[game]) {
         return res.status(400).send({ error: "Invalid request" });
     }
     
+    // Удаляем старые записи игрока из очереди
     queues[game] = queues[game].filter(p => p.uid !== uid);
+    // Удаляем старые пендинг матчи
     delete pendingMatches[uid];
 
     queues[game].push({
         uid,
         params,
-        ignored: ignored || [],
+        ignored: ignored || [], // Сохраняем черный список
         time: Date.now()
     });
 
-    console.log(`Player ${uid} joined ${game}. Ignore list size: ${ignored ? ignored.length : 0}`);
+    console.log(`Player ${uid} joined ${game}. Total: ${queues[game].length}`);
     res.send({ ok: true });
 });
 
+// =============== выход из очереди ===============
 app.post("/leaveQueue", (req, res) => {
     const { uid, game } = req.body;
-    if (queues[game]) {
-        queues[game] = queues[game].filter(p => p.uid !== uid);
+
+    if (!uid || !queues[game]) {
+        return res.status(200).send({ ok: true });
     }
-    delete pendingMatches[uid];
+    queues[game] = queues[game].filter(p => p.uid !== uid);
+    delete pendingMatches[uid]; // Чистим буфер матчей
+    
+    console.log(`Player ${uid} left ${game}`);
     res.send({ ok: true });
 });
 
-// === ОБНОВЛЕННЫЙ ПОИСК МАТЧА ===
+// =============== поиск матча ===============
 app.post("/checkMatch", (req, res) => {
     const { uid, game } = req.body;
 
-    // 1. Сначала проверяем, не найден ли уже матч для этого игрока
+    if (!uid) return res.status(400).send({ error: "No UID" });
+
+    // 1. Сначала проверяем буфер готовых матчей
     if (pendingMatches[uid]) {
         const matchData = pendingMatches[uid];
-        
-        // Удаляем запись, чтобы не отправлять её вечно (одноразовое чтение)
-        delete pendingMatches[uid];
-        
-        console.log(`Match delivered to ${uid}`);
+        delete pendingMatches[uid]; // Удаляем, чтобы не слать повторно
+        console.log(`Match delivered to ${uid} from buffer`);
         return res.send({ match: matchData });
     }
 
-    // 2. Если матча в буфере нет, ищем в очереди
-    if (!queues[game]) return res.status(400).send({ error: "Invalid game" });
+    // 2. Если матча в буфере нет, проверяем валидность игры
+    if (!queues[game]) {
+        return res.status(400).send({ error: "Invalid game" });
+    }
 
     const queue = queues[game];
     const me = queue.find(p => p.uid === uid);
-
-    // Если игрока нет в очереди и нет в pendingMatches -> он нигде
+    
+    // Если игрока нет ни в очереди, ни в буфере -> null
     if (!me) return res.send({ match: null });
 
     const now = Date.now();
@@ -108,26 +157,27 @@ app.post("/checkMatch", (req, res) => {
         if (matcher(me, other, searchTime)) {
             console.log(`MATCH FOUND: ${uid} + ${other.uid}`);
 
-            // Формируем данные матча
             const matchForMe = {
+                players: [uid, other.uid],
                 opponentId: other.uid,
                 opponentParams: other.params
             };
+
             const matchForOther = {
+                players: [other.uid, uid],
                 opponentId: me.uid,
                 opponentParams: me.params
             };
 
-            // Сохраняем в буфер для ОБОИХ
+            // Сохраняем результат для обоих
             pendingMatches[uid] = matchForMe;
             pendingMatches[other.uid] = matchForOther;
 
             // Удаляем ОБОИХ из очереди поиска
             queues[game] = queue.filter(p => p.uid !== uid && p.uid !== other.uid);
 
-            // Отдаем ответ текущему инициатору (мне)
-            // Удаляем из pendingMatches для меня сразу, так как я уже получил ответ
-            delete pendingMatches[uid]; 
+            // Отдаем ответ мне (и удаляем из буфера мой экземпляр)
+            delete pendingMatches[uid];
             return res.send({ match: matchForMe });
         }
     }
@@ -135,11 +185,26 @@ app.post("/checkMatch", (req, res) => {
     res.send({ match: null });
 });
 
+// =============== общее количество игроков ===============
+app.get("/totalSearching", (req, res) => {
+    let total = 0;
+    for (const game in queues) {
+        total += queues[game].length;
+    }
+    res.send({ total });
+});
+
+// =============== игроки по игре ===============
 app.post("/searchingByGame", (req, res) => {
     const { game } = req.body;
-    if (!queues[game]) return res.status(400).send({ error: "Invalid game" });
+
+    if (!queues[game]) {
+        return res.status(400).send({ error: "Invalid game" });
+    }
+
     res.send({ count: queues[game].length });
 });
 
+// =============== запуск сервера ===============
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
