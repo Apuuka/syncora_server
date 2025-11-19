@@ -133,7 +133,7 @@ app.post("/checkMatch", (req, res) => {
 
             return res.send({
                 match: {
-                    players: [uid, other.uid]
+                    players: [uid, other.uid],
 					opponentParams: other.params
                 }
             });
