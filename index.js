@@ -264,27 +264,31 @@ app.post("/checkMatch", (req, res) => {
 
     for (const other of queue) {
         if (other.uid === uid) continue;
-
+ 
         if (matcher(me, other, searchTime)) {
             console.log(`MATCH FOUND: ${uid} + ${other.uid} in ${game} after ${searchTime.toFixed(1)}s`);
-
+ 
+            const matchId = `${uid}_${other.uid}_${Date.now()}`;
+ 
             const matchForMe = {
                 players: [uid, other.uid],
                 opponentId: other.uid,
-                opponentParams: other.params
+                opponentParams: other.params,
+                matchId: matchId
             };
-
+ 
             const matchForOther = {
                 players: [other.uid, uid],
                 opponentId: me.uid,
-                opponentParams: me.params
+                opponentParams: me.params,
+                matchId: matchId
             };
-
-            pendingMatches[uid]        = matchForMe;
-            pendingMatches[other.uid]  = matchForOther;
-
+ 
+            pendingMatches[uid]       = matchForMe;
+            pendingMatches[other.uid] = matchForOther;
+ 
             queues[game] = queue.filter(p => p.uid !== uid && p.uid !== other.uid);
-
+ 
             delete pendingMatches[uid];
             return res.send({ match: matchForMe });
         }
