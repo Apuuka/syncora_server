@@ -61,7 +61,7 @@ function isIgnored(me, other) {
 // totalScore = (rankIndex - 1) * 6 + (level - 1)
 //
 // Толерантность по времени поиска:
-//   < 20 сек  → ±3 подуровня (строгий — только близкие уровни)
+//   < 20 сек  → ±3 подуровня (строгий)
 //   < 40 сек  → ±6  (≈ 1 ранг)
 //   < 60 сек  → ±12 (≈ 2 ранга)
 //   < 80 сек  → ±18 (≈ 3 ранга)
@@ -70,30 +70,29 @@ function isIgnored(me, other) {
 function matchDeadlock(me, other, searchTime) {
     if (isIgnored(me, other)) return false;
 
-    const meRankIndex = deadlockRankOrder[me.params.rank];
+    const meRankIndex    = deadlockRankOrder[me.params.rank];
     const otherRankIndex = deadlockRankOrder[other.params.rank];
     if (!meRankIndex || !otherRankIndex) return false;
 
-    const meLevel = me.params.level;
+    const meLevel    = me.params.level;
     const otherLevel = other.params.level;
     if (!meLevel || !otherLevel) return false;
 
-    // Приводим к единой шкале: (rankIndex-1)*6 + (level-1)
-    const meScore = (meRankIndex - 1) * 6 + (meLevel - 1);
+    const meScore    = (meRankIndex - 1) * 6 + (meLevel - 1);
     const otherScore = (otherRankIndex - 1) * 6 + (otherLevel - 1);
 
     const tolerance =
-        searchTime < 20 ? 3  :   // ±3 подуровня
-        searchTime < 40 ? 6  :   // ±1 ранг
-        searchTime < 60 ? 12 :   // ±2 ранга
-        searchTime < 80 ? 18 :   // ±3 ранга
-        30;                      // ±5 рангов (максимум)
+        searchTime < 20 ? 3  :
+        searchTime < 40 ? 6  :
+        searchTime < 60 ? 12 :
+        searchTime < 80 ? 18 :
+        30;
 
     return Math.abs(meScore - otherScore) <= tolerance;
 }
 
 // ---- FREE DEADLOCK (Лояльный поиск — без ограничений) ----
-function matchFreeDeadlock(me, other, searchTime) {
+function matchFreeDeadlock(me, other) {
     if (isIgnored(me, other)) return false;
     return true; // Любой с любым
 }
@@ -137,7 +136,7 @@ function matchRust(me, other, searchTime) {
     const h2 = other.params.hours;
     if (!h1 || !h2 || h1 === 0 || h2 === 0) return false;
 
-    const diff = Math.abs(h1 - h2);
+    const diff    = Math.abs(h1 - h2);
     const percent = diff / Math.max(h1, h2);
 
     const tolerance =
@@ -199,7 +198,7 @@ app.post("/joinQueue", (req, res) => {
         return res.status(400).send({ error: "Invalid request" });
     }
 
-    // Удаляем старые записи игрока из ВСЕХ очередей (в т.ч. free_deadlock и deadlock)
+    // Удаляем игрока из ВСЕХ очередей (не может быть в deadlock и free_deadlock одновременно)
     for (const q in queues) {
         queues[q] = queues[q].filter(p => p.uid !== uid);
     }
@@ -222,7 +221,6 @@ app.post("/leaveQueue", (req, res) => {
 
     if (!uid) return res.status(200).send({ ok: true });
 
-    // Удаляем из конкретной очереди, если game указан, иначе из всех
     if (game && queues[game]) {
         queues[game] = queues[game].filter(p => p.uid !== uid);
     } else {
@@ -256,13 +254,13 @@ app.post("/checkMatch", (req, res) => {
     }
 
     const queue = queues[game];
-    const me = queue.find(p => p.uid === uid);
+    const me    = queue.find(p => p.uid === uid);
 
     if (!me) return res.send({ match: null });
 
-    const now = Date.now();
+    const now        = Date.now();
     const searchTime = (now - me.time) / 1000;
-    const matcher = matchRules[game];
+    const matcher    = matchRules[game];
 
     for (const other of queue) {
         if (other.uid === uid) continue;
@@ -282,8 +280,8 @@ app.post("/checkMatch", (req, res) => {
                 opponentParams: me.params
             };
 
-            pendingMatches[uid] = matchForMe;
-            pendingMatches[other.uid] = matchForOther;
+            pendingMatches[uid]        = matchForMe;
+            pendingMatches[other.uid]  = matchForOther;
 
             queues[game] = queue.filter(p => p.uid !== uid && p.uid !== other.uid);
 
@@ -312,7 +310,13 @@ app.post("/searchingByGame", (req, res) => {
         return res.status(400).send({ error: "Invalid game" });
     }
 
-    res.send({ count: queues[game].length });
+    // FIX: для deadlock учитываем обе очереди — обычную и лояльный поиск
+    let count = queues[game].length;
+    if (game === "deadlock") {
+        count += queues["free_deadlock"].length;
+    }
+
+    res.send({ count });
 });
 
 // =============== запуск сервера ===============
