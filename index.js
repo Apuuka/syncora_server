@@ -7,13 +7,17 @@ app.use(express.json());
 
 // =============== очереди ===============
 const queues = {
-    deadlock: [],
-    free_deadlock: [],   // Лояльный поиск — без ограничений по рангу/уровню
-    dota2: [],
-    cs2: [],
-    valorant: [],
-    rust: [],
-    pubg: []
+    deadlock:      [],
+    free_deadlock: [],   // Лояльный поиск Deadlock — без ограничений
+	
+    dota2:         [],	 // Dota2
+	free_dota2:    [],	 // Лояльный поиск Dota2
+	
+    premier_cs2:   [],   // CS2 Premier ELO
+    faceit_cs2:    [],   // CS2 Faceit ELO
+    free_cs2:      [],   // CS2 Лояльный поиск — без ограничений
+	
+    valorant:           []
 };
 
 // =============== хранилище готовых матчей ===============
@@ -21,17 +25,9 @@ const pendingMatches = {};
 
 // =============== РЕЙТИНГИ И КОНСТАНТЫ ================
 const deadlockRankOrder = {
-    "INITIATE": 1,
-    "SEEKER": 2,
-    "ALCHEMIST": 3,
-    "ARCANIST": 4,
-    "RITUALIST": 5,
-    "EMISSARY": 6,
-    "ARCHON": 7,
-    "ORACLE": 8,
-    "PHANTOM": 9,
-    "ASCENDANT": 10,
-    "ETERNUS": 11
+    "INITIATE": 1, "SEEKER": 2, "ALCHEMIST": 3, "ARCANIST": 4,
+    "RITUALIST": 5, "EMISSARY": 6, "ARCHON": 7, "ORACLE": 8,
+    "PHANTOM": 9, "ASCENDANT": 10, "ETERNUS": 11
 };
 
 const pubgRanks = [
@@ -56,17 +52,6 @@ function isIgnored(me, other) {
 // =========================================================
 
 // ---- DEADLOCK (Rank + Level) ----
-//
-// Комбинированный счёт: каждый ранг содержит 6 подуровней (1–5 и ★=6).
-// totalScore = (rankIndex - 1) * 6 + (level - 1)
-//
-// Толерантность по времени поиска:
-//   < 20 сек  → ±3 подуровня (строгий)
-//   < 40 сек  → ±6  (≈ 1 ранг)
-//   < 60 сек  → ±12 (≈ 2 ранга)
-//   < 80 сек  → ±18 (≈ 3 ранга)
-//   иначе     → ±30 (≈ 5 рангов, максимум)
-//
 function matchDeadlock(me, other, searchTime) {
     if (isIgnored(me, other)) return false;
 
@@ -85,40 +70,60 @@ function matchDeadlock(me, other, searchTime) {
         searchTime < 20 ? 3  :
         searchTime < 40 ? 6  :
         searchTime < 60 ? 12 :
-        searchTime < 80 ? 18 :
-        30;
+        searchTime < 80 ? 18 : 30;
 
     return Math.abs(meScore - otherScore) <= tolerance;
 }
 
-// ---- FREE DEADLOCK (Лояльный поиск — без ограничений) ----
+// ---- FREE DEADLOCK (без ограничений) ----
 function matchFreeDeadlock(me, other) {
     if (isIgnored(me, other)) return false;
-    return true; // Любой с любым
+    return true;
 }
 
-// ---- DOTA 2 (Rating/MMR) ----
+// ---- DOTA 2 (MMR) ----
 function matchDota(me, other, searchTime) {
     if (isIgnored(me, other)) return false;
 
     const diff = Math.abs(me.params.rating - other.params.rating);
-
     const tolerance =
         searchTime < 20 ? 500  :
         searchTime < 40 ? 1000 :
         searchTime < 60 ? 1500 :
-        searchTime < 90 ? 2000 :
-        2800;
+        searchTime < 90 ? 2000 : 2800;
+
+    return diff <= tolerance;
+}
+
+// ---- CS2 PREMIER ELO ----
+// Premier ELO имеет шкалу 0–30 000, толерантность шире чем у Faceit
+function matchPremierCS2(me, other, searchTime) {
+    if (isIgnored(me, other)) return false;
+
+    const elo1 = Number(me.params.elo);
+    const elo2 = Number(other.params.elo);
+    if (!elo1 || !elo2) return false;
+
+    const diff = Math.abs(elo1 - elo2);
+    const tolerance =
+        searchTime < 20 ? 1000 :
+        searchTime < 40 ? 2000 :
+        searchTime < 60 ? 3000 :
+        5000;
 
     return diff <= tolerance;
 }
 
 // ---- CS2 FACEIT ELO ----
-function matchCS2(me, other, searchTime) {
+// Faceit ELO имеет шкалу 200–10 000, толерантность уже чем у Premier
+function matchFaceitCS2(me, other, searchTime) {
     if (isIgnored(me, other)) return false;
 
-    const diff = Math.abs(me.params.elo - other.params.elo);
+    const elo1 = Number(me.params.elo);
+    const elo2 = Number(other.params.elo);
+    if (!elo1 || !elo2) return false;
 
+    const diff = Math.abs(elo1 - elo2);
     const tolerance =
         searchTime < 20 ? 100 :
         searchTime < 40 ? 200 :
@@ -126,6 +131,12 @@ function matchCS2(me, other, searchTime) {
         400;
 
     return diff <= tolerance;
+}
+
+// ---- CS2 FREE (лояльный поиск — без ограничений) ----
+function matchFreeCS2(me, other) {
+    if (isIgnored(me, other)) return false;
+    return true;
 }
 
 // ---- RUST (hours played) ----
@@ -136,13 +147,10 @@ function matchRust(me, other, searchTime) {
     const h2 = other.params.hours;
     if (!h1 || !h2 || h1 === 0 || h2 === 0) return false;
 
-    const diff    = Math.abs(h1 - h2);
-    const percent = diff / Math.max(h1, h2);
-
+    const percent = Math.abs(h1 - h2) / Math.max(h1, h2);
     const tolerance =
         searchTime < 30 ? 0.20 :
-        searchTime < 60 ? 0.30 :
-        0.40;
+        searchTime < 60 ? 0.30 : 0.40;
 
     return percent <= tolerance;
 }
@@ -157,8 +165,7 @@ function matchPubg(me, other, searchTime) {
 
     const tolerance =
         searchTime < 30 ? 1 :
-        searchTime < 60 ? 2 :
-        3;
+        searchTime < 60 ? 2 : 3;
 
     return Math.abs(i1 - i2) <= tolerance;
 }
@@ -173,21 +180,22 @@ function matchValorant(me, other, searchTime) {
 
     const tolerance =
         searchTime < 30 ? 1 :
-        searchTime < 60 ? 2 :
-        3;
+        searchTime < 60 ? 2 : 3;
 
     return Math.abs(i1 - i2) <= tolerance;
 }
 
 // =============== сборник правил ===============
 const matchRules = {
-    deadlock: matchDeadlock,
+    deadlock:      matchDeadlock,
     free_deadlock: matchFreeDeadlock,
-    dota2: matchDota,
-    cs2: matchCS2,
-    valorant: matchValorant,
-    rust: matchRust,
-    pubg: matchPubg
+    dota2:         matchDota,
+    premier_cs2:   matchPremierCS2,
+    faceit_cs2:    matchFaceitCS2,
+    free_cs2:      matchFreeCS2,
+    valorant:      matchValorant,
+    rust:          matchRust,
+    pubg:          matchPubg
 };
 
 // =============== вход в очередь ===============
@@ -198,7 +206,7 @@ app.post("/joinQueue", (req, res) => {
         return res.status(400).send({ error: "Invalid request" });
     }
 
-    // Удаляем игрока из ВСЕХ очередей (не может быть в deadlock и free_deadlock одновременно)
+    // Удаляем из ВСЕХ очередей (игрок не может быть в двух сразу)
     for (const q in queues) {
         queues[q] = queues[q].filter(p => p.uid !== uid);
     }
@@ -240,7 +248,7 @@ app.post("/checkMatch", (req, res) => {
 
     if (!uid) return res.status(400).send({ error: "No UID" });
 
-    // 1. Проверяем буфер готовых матчей
+    // 1. Буфер готовых матчей
     if (pendingMatches[uid]) {
         const matchData = pendingMatches[uid];
         delete pendingMatches[uid];
@@ -248,47 +256,43 @@ app.post("/checkMatch", (req, res) => {
         return res.send({ match: matchData });
     }
 
-    // 2. Проверяем валидность игры
+    // 2. Валидация очереди
     if (!queues[game]) {
         return res.status(400).send({ error: "Invalid game" });
     }
 
     const queue = queues[game];
     const me    = queue.find(p => p.uid === uid);
-
     if (!me) return res.send({ match: null });
 
-    const now        = Date.now();
-    const searchTime = (now - me.time) / 1000;
+    const searchTime = (Date.now() - me.time) / 1000;
     const matcher    = matchRules[game];
 
     for (const other of queue) {
         if (other.uid === uid) continue;
- 
+
         if (matcher(me, other, searchTime)) {
             console.log(`MATCH FOUND: ${uid} + ${other.uid} in ${game} after ${searchTime.toFixed(1)}s`);
- 
+
             const matchId = `${uid}_${other.uid}_${Date.now()}`;
- 
+
             const matchForMe = {
                 players: [uid, other.uid],
                 opponentId: other.uid,
                 opponentParams: other.params,
                 matchId: matchId
             };
- 
             const matchForOther = {
                 players: [other.uid, uid],
                 opponentId: me.uid,
                 opponentParams: me.params,
                 matchId: matchId
             };
- 
+
             pendingMatches[uid]       = matchForMe;
             pendingMatches[other.uid] = matchForOther;
- 
             queues[game] = queue.filter(p => p.uid !== uid && p.uid !== other.uid);
- 
+
             delete pendingMatches[uid];
             return res.send({ match: matchForMe });
         }
@@ -300,9 +304,7 @@ app.post("/checkMatch", (req, res) => {
 // =============== общее количество игроков ===============
 app.get("/totalSearching", (req, res) => {
     let total = 0;
-    for (const game in queues) {
-        total += queues[game].length;
-    }
+    for (const game in queues) total += queues[game].length;
     res.send({ total });
 });
 
@@ -314,10 +316,18 @@ app.post("/searchingByGame", (req, res) => {
         return res.status(400).send({ error: "Invalid game" });
     }
 
-    // FIX: для deadlock учитываем обе очереди — обычную и лояльный поиск
     let count = queues[game].length;
+
+    // Deadlock: обычная + лояльная очереди
     if (game === "deadlock") {
         count += queues["free_deadlock"].length;
+    }
+
+    // CS2: суммируем все три очереди (Premier + Faceit + Free)
+    if (game === "premier_cs2" || game === "faceit_cs2" || game === "free_cs2") {
+        count = queues["premier_cs2"].length
+              + queues["faceit_cs2"].length
+              + queues["free_cs2"].length;
     }
 
     res.send({ count });
