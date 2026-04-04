@@ -25,17 +25,19 @@ const queues = {
     free_cs2:      [],   // Лояльный поиск (без ограничений)
 
     // ── Valorant ──────────────────────────────────────────────
-	valorant:      [],   // Обычный поиск (ранг)
+    valorant:      [],   // Обычный поиск (ранг)
     free_valorant: [],   // Лояльный поиск (без ограничений)
 };
 
+// Алиасы для /searchingByGame — суммируют под-очереди одной игры
 const queueAliases = {
     deadlock: ["deadlock", "free_deadlock"],
     cs2:      ["premier_cs2", "faceit_cs2", "free_cs2"],
     dota2:    ["dota2", "free_dota2"],
-	valorant:    ["valorant", "free_valorant"],
+    valorant: ["valorant", "free_valorant"],
 };
 
+// Буфер готовых матчей: uid → matchData
 const pendingMatches = {};
 
 
@@ -56,13 +58,13 @@ const VALORANT_RANKS = [
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║                           ФУНКЦИИ                            ║
+// ║                   ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ                   ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 // Проверяет, есть ли один игрок в списке игнора другого
 function isIgnored(me, other) {
-    if (me.ignored    && me.ignored.includes(other.uid))    return true;
-    if (other.ignored && other.ignored.includes(me.uid))    return true;
+    if (me.ignored    && me.ignored.includes(other.uid)) return true;
+    if (other.ignored && other.ignored.includes(me.uid)) return true;
     return false;
 }
 
@@ -84,6 +86,7 @@ function removeFromAllQueues(uid) {
 // ╚══════════════════════════════════════════════════════════════╝
 
 // ── Deadlock (Rank + Level → единый score) ────────────────────
+// score = (rankIndex - 1) * 6 + (level - 1), диапазон 0–65
 function matchDeadlock(me, other, searchTime) {
     if (isIgnored(me, other)) return false;
 
@@ -107,16 +110,24 @@ function matchDeadlock(me, other, searchTime) {
     return Math.abs(meScore - otherScore) <= tolerance;
 }
 
-// ── Free Deadlock (без ограничений) ───────────────────────────
-function matchFreeDeadlock(me, other) {
+// ── Free — без ограничений (Deadlock / Dota / Valorant) ───────
+function matchFree(me, other) {
     return !isIgnored(me, other);
 }
 
 // ── Dota 2 (MMR) ──────────────────────────────────────────────
+// FIX: добавлено Number() и isNaN-проверка.
+// Раньше rating приходил как строка → Math.abs возвращал NaN
+// и матч никогда не находился. Роли передаются тиммейту
+// и не влияют на матчмейкинг.
 function matchDota(me, other, searchTime) {
     if (isIgnored(me, other)) return false;
 
-    const diff = Math.abs(me.params.rating - other.params.rating);
+    const r1 = Number(me.params.rating);
+    const r2 = Number(other.params.rating);
+    if (isNaN(r1) || isNaN(r2)) return false;
+
+    const diff = Math.abs(r1 - r2);
     const tolerance =
         searchTime < 20 ? 500  :
         searchTime < 40 ? 1000 :
@@ -165,7 +176,6 @@ function matchFreeCS2(me, other) {
     return !isIgnored(me, other);
 }
 
-
 // ── Valorant (индекс ранга) ───────────────────────────────────
 function matchValorant(me, other, searchTime) {
     if (isIgnored(me, other)) return false;
@@ -184,19 +194,19 @@ function matchValorant(me, other, searchTime) {
 // ── Сборник правил ────────────────────────────────────────────
 const matchRules = {
     deadlock:      matchDeadlock,
-    free_deadlock: matchFreeDeadlock,
+    free_deadlock: matchFree,
     dota2:         matchDota,
-    free_dota2:    matchFreeDeadlock,
+    free_dota2:    matchFree,
     premier_cs2:   matchPremierCS2,
     faceit_cs2:    matchFaceitCS2,
     free_cs2:      matchFreeCS2,
-	valorant:      matchValorant,
-    free_valorant: matchFreeDeadlock,
+    valorant:      matchValorant,
+    free_valorant: matchFree,
 };
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║                          ЭНДПОИНТЫ                           ║
+// ║                         ЭНДПОИНТЫ                           ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 // ── POST /joinQueue — вход в очередь ─────────────────────────
@@ -290,6 +300,7 @@ app.post("/checkMatch", (req, res) => {
                 matchId,
             };
 
+            // Оппонент заберёт свой матч при следующем /checkMatch
             pendingMatches[other.uid] = matchForOther;
 
             return res.send({ match: matchForMe });
@@ -310,6 +321,7 @@ app.get("/totalSearching", (req, res) => {
 app.post("/searchingByGame", (req, res) => {
     const { game } = req.body;
 
+    // Алиас → суммируем несколько очередей одной игры
     if (queueAliases[game]) {
         const count = sumQueues(queueAliases[game]);
         return res.send({ count });
